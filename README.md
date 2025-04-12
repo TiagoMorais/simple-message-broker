@@ -26,12 +26,7 @@ Cada mensagem SMP é composta por um cabeçalho e um corpo.
 * Usado para se inscrever num tópico.
 * Corpo: `Tópico` (string).
 
-### MESSAGE (Tipo 0x03)
-
-* Usado para enviar uma mensagem a um consumidor.
-* Corpo: `Tópico` (string), `Mensagem` (string).
-
-### ACK (Tipo 0x04)
+### ACK (Tipo 0x03)
 
 * Usado para confirmar o recebimento de uma mensagem.
 * Corpo: `ID da mensagem` (4 bytes).
@@ -52,8 +47,8 @@ Cada mensagem SMP é composta por um cabeçalho e um corpo.
 
 ### ACK
 
-* `0x04`: Tipo de mensagem ACK.
-* `0x00 0x00 0x00 0x04`: Comprimento do corpo (4 bytes).
+* `0x03`: Tipo de mensagem ACK.
+* `0x00 0x00 0x00 0x03`: Comprimento do corpo (4 bytes).
 * `0x00 0x00 0x30 0x39`: ID da mensagem recebida.
 
 ## Funcionamento do ACK

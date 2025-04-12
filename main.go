@@ -25,6 +25,8 @@ var subscriptions = struct {
         m map[string][]net.Conn
 }{m: make(map[string][]net.Conn)}
 
+const MaxBodySize = 1024 * 1024
+
 func handleConnection(conn net.Conn) {
         defer conn.Close()
         reader := bufio.NewReader(conn)
@@ -40,6 +42,12 @@ func handleConnection(conn net.Conn) {
 
                 messageType := header[0]
                 bodyLength := binary.BigEndian.Uint32(header[1:])
+
+                // Verificar se o tamanho do body passa 1MB
+                if bodyLength > MaxBodySize{
+                        fmt.Println("Tamanho do body excede o limite 1MB.")
+                        return
+                }
 
                 // Ler o corpo da mensagem
                 body := make([]byte, bodyLength)
@@ -68,7 +76,7 @@ func handleConnection(conn net.Conn) {
                         }
                         sub.Conn = conn
                         subscribe(sub)
-                case 0x04: // ACK
+                case 0x03: // ACK
                         var ack Message
                         err = json.Unmarshal(body, &ack)
                         if err != nil {
