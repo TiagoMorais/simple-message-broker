@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net"
 	"os"
 	"sync"
@@ -27,6 +26,11 @@ type Topic struct {
 	Offset int64  `json:"offset"`
 }
 
+type Ack struct {
+	Topic  string `json:"topic"`
+	Offset int64  `json:"offset"`
+}
+
 var topic_subscribers = struct {
 	sync.RWMutex
 	subs map[Topic]net.Conn
@@ -42,6 +46,13 @@ const MaxBodySize = 1024 * 1024
 // const WriteAheadLogDirectory = "/etc/simple_message_broker/wal/"
 const WriteAheadLogDirectory = "./wal/"
 const ConfigFile = "config.json"
+const OffsetsFile = "offsets.json"
+
+// Track each topic's offset (only one consumer per topic)
+var topicOffsets = struct {
+	sync.RWMutex
+	offsets map[string]int64
+}{offsets: make(map[string]int64)}
 
 func getTopicByName(name string) (*Topic, error) {
         for k := range topic_subscribers.subs {
@@ -92,7 +103,7 @@ func handleConnection(conn net.Conn) {
 				return
 			}
 			writeOnWriteAheadLog(msg)
-			publishMessage(msg)
+			// Do NOT send to consumers directly here
 		case 0x02: // SUBSCRIBE
 			var sub Subscription
 			err = json.Unmarshal(body, &sub)
@@ -101,15 +112,35 @@ func handleConnection(conn net.Conn) {
 				return
 			}
 			sub.Conn = conn
-			subscribe(sub)
+			if !subscribe(sub) {
+				// Send error to client: only one consumer allowed
+				header := make([]byte, 5)
+				header[0] = 0xFF // Custom error type
+				msg := []byte("Topic already has a consumer")
+				binary.BigEndian.PutUint32(header[1:], uint32(len(msg)))
+				conn.Write(header)
+				conn.Write(msg)
+				return
+			}
+			// Start sending messages from WAL at current topic offset (default 0)
+			topicOffsets.Lock()
+			if _, exists := topicOffsets.offsets[sub.Topic]; !exists {
+				topicOffsets.offsets[sub.Topic] = 0
+			}
+			offset := topicOffsets.offsets[sub.Topic]
+			topicOffsets.Unlock()
+			sendMessageFromWALAtOffset(conn, sub.Topic, offset)
+			saveTopicOffsets()
 		case 0x03: // ACK
-			var ack Message
+			var ack Ack
 			err = json.Unmarshal(body, &ack)
 			if err != nil {
 				fmt.Println("Erro ao decodificar a mensagem ACK:", err)
 				return
 			}
-			fmt.Println("ACK recebido para a mensagem:", ack.Id)
+			fmt.Printf("ACK recebido para o tópico %s, offset %d\n", ack.Topic, ack.Offset)
+			handleAckAndSendNextTopic(ack.Topic, conn)
+			saveTopicOffsets()
 		default:
 			fmt.Println("Tipo de mensagem desconhecido:", messageType)
 			return
@@ -149,6 +180,48 @@ func writeOnWriteAheadLog(msg Message) {
 	if _, err := file.Write(append(cenas, '\n')); err != nil {
 		fmt.Println("Erro ao escrever no WAL:", err)
 	}
+}
+
+// Send the next message from WAL to the consumer based on topic offset
+func sendMessageFromWALAtOffset(conn net.Conn, topic string, offset int64) {
+	walPath := WriteAheadLogDirectory + topic + ".log"
+	file, err := os.Open(walPath)
+	if err != nil {
+		fmt.Println("Erro ao abrir WAL:", err)
+		return
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	var currentLine int64
+	for scanner.Scan() {
+		if currentLine == offset {
+			var msg Message
+			if err := json.Unmarshal(scanner.Bytes(), &msg); err == nil {
+				// Ensure the message has a unique ID (use offset as ID if not set)
+				if msg.Id == 0 {
+					msg.Id = uint32(offset)
+				}
+				body, _ := json.Marshal(msg)
+				header := make([]byte, 5)
+				header[0] = 0x03 // MESSAGE
+				binary.BigEndian.PutUint32(header[1:], uint32(len(body)))
+				conn.Write(header)
+				conn.Write(body)
+			}
+			break
+		}
+		currentLine++
+	}
+}
+
+// On ACK, advance topic offset and send next message
+func handleAckAndSendNextTopic(topic string, conn net.Conn) {
+	topicOffsets.Lock()
+	topicOffsets.offsets[topic]++
+	offset := topicOffsets.offsets[topic]
+	topicOffsets.Unlock()
+	sendMessageFromWALAtOffset(conn, topic, offset)
 }
 
 func publishMessage(msg Message) {
@@ -191,10 +264,15 @@ func publishMessage(msg Message) {
 	subscriptions.RUnlock()
 }
 
-func subscribe(sub Subscription) {
+func subscribe(sub Subscription) bool {
 	subscriptions.Lock()
-	subscriptions.m[sub.Topic] = append(subscriptions.m[sub.Topic], sub.Conn)
-	subscriptions.Unlock()
+	defer subscriptions.Unlock()
+	if len(subscriptions.m[sub.Topic]) > 0 {
+		// Already has a consumer
+		return false
+	}
+	subscriptions.m[sub.Topic] = []net.Conn{sub.Conn}
+	return true
 }
 
 func main() {
@@ -206,7 +284,7 @@ func main() {
 	defer listener.Close()
 
 	fmt.Println("Servidor iniciado na porta 8080")
-	loadTopics()
+	loadTopicOffsets()
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
@@ -217,56 +295,42 @@ func main() {
 	}
 }
 
-func loadTopics() {
-	file, err := os.Open(ConfigFile)
+
+
+// Save topic offsets to disk
+func saveTopicOffsets() {
+	topicOffsets.RLock()
+	defer topicOffsets.RUnlock()
+	file, err := os.Create(OffsetsFile)
 	if err != nil {
-		fmt.Println("Erro ao abrir o arquivo de configuração:", err)
+		fmt.Println("Erro ao criar arquivo de offsets:", err)
 		return
 	}
 	defer file.Close()
-
-	reader := bufio.NewReader(file)
-	for {
-		line, reader_err := reader.ReadString('\n')
-		if reader_err != nil && reader_err != io.EOF {
-			fmt.Printf("error reading file %s", reader_err)
-			break
-		}
-		fmt.Print(line)
-		var topic Topic
-		err = json.Unmarshal([]byte(line), &topic)
-		if err != nil {
-			fmt.Println("Erro ao descodificar tópico do arquivo de configuração:", err)
-			continue
-		}
-
-		topic_subscribers.Lock()
-		if _, exists := topic_subscribers.subs[topic]; !exists {
-			topic_subscribers.subs[topic] = nil
-		}
-		topic_subscribers.Unlock()
-		fmt.Printf("Tópico carregado: %s, Offset: %d\n", topic.Name, topic.Offset)
-		if reader_err == io.EOF {
-			break
-		}
+	enc := json.NewEncoder(file)
+	if err := enc.Encode(topicOffsets.offsets); err != nil {
+		fmt.Println("Erro ao salvar offsets:", err)
 	}
+}
 
-	// scanner := bufio.NewScanner(file)
-	// for scanner.Scan() {
-	//         var topic Topic
-	//         err := json.Unmarshal(scanner.Bytes(), &topic)
-	//         if err != nil {
-	//                 fmt.Println("Erro ao decodificar tópico do arquivo de configuração:", err)
-	//                 continue
-	//         }
-	//         // Inicializa o mapa de assinantes para o tópico, se ainda não existir
-	//         subscriptions.Lock()
-	//         if _, exists := subscriptions.m[topic]; !exists {
-	//                 subscriptions.m[topic] = []net.Conn{}
-	//         }
-	//         subscriptions.Unlock()
-	// }
-	// if err := scanner.Err(); err != nil {
-	//         fmt.Println("Erro ao ler o arquivo de configuração:", err)
-	// }
+// Load topic offsets from disk
+func loadTopicOffsets() {
+	file, err := os.Open(OffsetsFile)
+	if err != nil {
+		fmt.Println("Arquivo de offsets não encontrado, iniciando vazio.")
+		return
+	}
+	defer file.Close()
+	var snapshot map[string]int64
+	dec := json.NewDecoder(file)
+	if err := dec.Decode(&snapshot); err != nil {
+		fmt.Println("Erro ao carregar offsets:", err)
+		return
+	}
+	topicOffsets.Lock()
+	for topic, offset := range snapshot {
+		topicOffsets.offsets[topic] = offset
+	}
+	topicOffsets.Unlock()
+	fmt.Println("Offsets de tópicos carregados do disco:", snapshot)
 }

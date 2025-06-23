@@ -12,148 +12,154 @@ import (
 )
 
 type Message struct {
-        Topic   string      `json:"topic"`
-        Message string      `json:"message"`
-        Id      uint32      `json:"id"`
+	Topic   string `json:"topic"`
+	Message string `json:"message,omitempty"`
+	Id      uint32 `json:"id,omitempty"`
+}
+
+type Ack struct {
+	Topic  string `json:"topic"`
+	Offset int64  `json:"offset"`
 }
 
 func main() {
-        if len(os.Args) < 2 {
-                fmt.Println("Uso: cli <endereço do servidor>")
-                return
-        }
+	if len(os.Args) < 2 {
+		fmt.Println("Uso: cli <endereço do servidor>")
+		return
+	}
 
-        serverAddr := os.Args[1]
+	serverAddr := os.Args[1]
 
-        conn, err := net.Dial("tcp", serverAddr)
-        if err != nil {
-                fmt.Println("Erro ao conectar ao servidor:", err)
-                return
-        }
-        defer conn.Close()
+	conn, err := net.Dial("tcp", serverAddr)
+	if err != nil {
+		fmt.Println("Erro ao conectar ao servidor:", err)
+		return
+	}
+	defer conn.Close()
 
-        reader := bufio.NewReader(os.Stdin)
-        go readMessages(conn) // Inicia goroutine para ler mensagens
+	reader := bufio.NewReader(os.Stdin)
+	go readMessages(conn) // Inicia goroutine para ler mensagens
 
-        for {
-                fmt.Print("> ")
-                input, _ := reader.ReadString('\n')
-                input = strings.TrimSpace(input)
+	for {
+		fmt.Print("> ")
+		input, _ := reader.ReadString('\n')
+		input = strings.TrimSpace(input)
 
-                parts := strings.Split(input, " ")
-                if len(parts) == 0 {
-                        continue
-                }
+		parts := strings.Split(input, " ")
+		if len(parts) == 0 {
+			continue
+		}
 
-                command := parts[0]
+		command := parts[0]
 
-                switch command {
-                case "publish":
-                        if len(parts) < 3 {
-                                fmt.Println("Uso: publish <tópico> <mensagem>")
-                                continue
-                        }
-                        topic := parts[1]
-                        message := strings.Join(parts[2:], " ")
+		switch command {
+		case "publish":
+			if len(parts) < 3 {
+				fmt.Println("Uso: publish <tópico> <mensagem>")
+				continue
+			}
+			topic := parts[1]
+			message := strings.Join(parts[2:], " ")
 
-                        msg := Message{Topic: topic, Message: message}
-                        body, err := json.Marshal(msg)
-                        if err != nil {
-                                fmt.Println("Erro ao codificar a mensagem:", err)
-                                continue
-                        }
+			msg := Message{Topic: topic, Message: message}
+			body, err := json.Marshal(msg)
+			if err != nil {
+				fmt.Println("Erro ao codificar a mensagem:", err)
+				continue
+			}
 
-                        header := make([]byte, 5)
-                        header[0] = 0x01 // PUBLISH
-                        binary.BigEndian.PutUint32(header[1:], uint32(len(body)))
+			header := make([]byte, 5)
+			header[0] = 0x01 // PUBLISH
+			binary.BigEndian.PutUint32(header[1:], uint32(len(body)))
 
-                        conn.Write(header)
-                        conn.Write(body)
+			conn.Write(header)
+			conn.Write(body)
 
-                case "subscribe":
-                        if len(parts) < 2 {
-                                fmt.Println("Uso: subscribe <tópico>")
-                                continue
-                        }
-                        topic := parts[1]
+		case "subscribe":
+			if len(parts) < 2 {
+				fmt.Println("Uso: subscribe <tópico>")
+				continue
+			}
+			topic := parts[1]
 
-                        msg := Message{Topic: topic}
-                        body, err := json.Marshal(msg)
-                        if err != nil {
-                                fmt.Println("Erro ao codificar a mensagem:", err)
-                                continue
-                        }
+			msg := Message{Topic: topic}
+			body, err := json.Marshal(msg)
+			if err != nil {
+				fmt.Println("Erro ao codificar a mensagem:", err)
+				continue
+			}
 
-                        header := make([]byte, 5)
-                        header[0] = 0x02 // SUBSCRIBE
-                        binary.BigEndian.PutUint32(header[1:], uint32(len(body)))
+			header := make([]byte, 5)
+			header[0] = 0x02 // SUBSCRIBE
+			binary.BigEndian.PutUint32(header[1:], uint32(len(body)))
 
-                        conn.Write(header)
-                        conn.Write(body)
-                case "ack":
-                        if len(parts) < 2 {
-                                fmt.Println("Uso: ack <id>")
-                                continue
-                        }
+			conn.Write(header)
+			conn.Write(body)
 
-                        id, err := strconv.Atoi(parts[1])
+		case "ack":
+			if len(parts) < 3 {
+				fmt.Println("Uso: ack <tópico> <offset>")
+				continue
+			}
+			topic := parts[1]
+			offset, err := strconv.ParseInt(parts[2], 10, 64)
+			if err != nil {
+				fmt.Println("offset tem de ser um número inteiro")
+				continue
+			}
+			ack := Ack{Topic: topic, Offset: offset}
+			body, err := json.Marshal(ack)
+			if err != nil {
+				fmt.Println("Erro ao codificar o ACK:", err)
+				continue
+			}
+			header := make([]byte, 5)
+			header[0] = 0x03 // ACK
+			binary.BigEndian.PutUint32(header[1:], uint32(len(body)))
+			conn.Write(header)
+			conn.Write(body)
 
-                        if err != nil{
-                                fmt.Println("id tem de ser um número")
-                                continue
-                        }
-
-                        msg := Message{Id: uint32(id)}
-                        body, err := json.Marshal(msg)
-
-                        if err != nil {
-                                fmt.Println("Erro ao codificar a mensagem:", err)
-                                continue
-                        }
-
-                        header := make([]byte, 5)
-                        header[0] = 0x04 // ACK
-                        binary.BigEndian.PutUint32(header[1:], uint32(len(body)))
-
-                        conn.Write(header)
-                        conn.Write(body)
-
-                case "exit":
-                        return
-                default:
-                        fmt.Println("Comando desconhecido:", command)
-                }
-        }
+		case "exit":
+			return
+		default:
+			fmt.Println("Comando desconhecido:", command)
+		}
+	}
 }
 
 func readMessages(conn net.Conn) {
-        reader := bufio.NewReader(conn)
-        for {
-                header := make([]byte, 5)
-                _, err := reader.Read(header)
-                if err != nil {
-                        fmt.Println("Erro ao ler o cabeçalho:", err)
-                        return
-                }
+	reader := bufio.NewReader(conn)
+	for {
+		header := make([]byte, 5)
+		_, err := reader.Read(header)
+		if err != nil {
+			fmt.Println("Erro ao ler o cabeçalho:", err)
+			return
+		}
 
-                messageType := header[0]
-                bodyLength := binary.BigEndian.Uint32(header[1:])
+		messageType := header[0]
+		bodyLength := binary.BigEndian.Uint32(header[1:])
 
-                body := make([]byte, bodyLength)
-                _, err = reader.Read(body)
-                if err != nil {
-                        fmt.Println("Erro ao ler o corpo:", err)
-                        return
-                }
+		body := make([]byte, bodyLength)
+		_, err = reader.Read(body)
+		if err != nil {
+			fmt.Println("Erro ao ler o corpo:", err)
+			return
+		}
 
-                if messageType == 0x03 { // MESSAGE
-                        var msg Message
-                        err = json.Unmarshal(body, &msg)
-                        if err != nil {
-                                fmt.Println("Erro ao decodificar a mensagem:", err)
-                                return
-                        }
-                        fmt.Printf("Mensagem recebida do tópico '%s': %s\n", msg.Topic, msg.Message)
-                }
-        }
+		switch messageType {
+		case 0x03: // MESSAGE
+			var msg Message
+			err = json.Unmarshal(body, &msg)
+			if err != nil {
+				fmt.Println("Erro ao decodificar a mensagem:", err)
+				return
+			}
+			fmt.Printf("Mensagem recebida do tópico '%s' (id=%d): %s\n", msg.Topic, msg.Id, msg.Message)
+		case 0xFF: // Error
+			fmt.Printf("Erro do servidor: %s\n", string(body))
+		default:
+			fmt.Printf("Mensagem desconhecida do servidor (tipo %d): %s\n", messageType, string(body))
+		}
+	}
 }
