@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/binary"
 	"encoding/json"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -56,8 +57,12 @@ func handleConnection(conn net.Conn) {
 	for {
 		// Ler o cabeçalho
 		header := make([]byte, 5)
-		_, err := reader.Read(header)
+		_, err := io.ReadFull(reader, header)
 		if err != nil {
+			if err == io.EOF {
+				// Connection closed by the client
+				return
+			}
 			log.Println("Error reading header:", err)
 			return
 		}
@@ -73,8 +78,12 @@ func handleConnection(conn net.Conn) {
 
 		// Ler o corpo da mensagem
 		body := make([]byte, bodyLength)
-		_, err = reader.Read(body)
+		_, err = io.ReadFull(reader, body)
 		if err != nil {
+			if err == io.EOF {
+				// Connection closed by the client
+				return
+			}
 			log.Println("Error reading body:", err)
 			return
 		}
@@ -158,6 +167,16 @@ func writeOnWriteAheadLog(msg Message) {
 	}
 	if _, err := file.Write(append(line, '\n')); err != nil {
 		log.Println("Error writing to WAL:", err)
+	}
+
+	// Notify subscriber if one exists and is waiting
+	subscriptions.RLock()
+	defer subscriptions.RUnlock()
+	if conns, ok := subscriptions.m[msg.Topic]; ok && len(conns) > 0 {
+		topicOffsets.RLock()
+		offset := topicOffsets.offsets[msg.Topic]
+		topicOffsets.RUnlock()
+		sendMessageFromWALAtOffset(conns[0], msg.Topic, offset)
 	}
 }
 
