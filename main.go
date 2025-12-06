@@ -23,7 +23,7 @@ const (
 type Message struct {
 	Topic   string `json:"topic"`
 	Message string `json:"message"`
-	Id      uint32 `json:"id"`
+	ID      uint32 `json:"id"`
 }
 
 type Subscription struct {
@@ -156,7 +156,7 @@ func writeOnWriteAheadLog(msg Message) error {
 	}
 
 	// Count existing messages to determine the next ID
-	var nextID uint32 = 0
+	var nextID uint32
 	if file, err := os.Open(walPath); err == nil {
 		scanner := bufio.NewScanner(file)
 		for scanner.Scan() {
@@ -166,7 +166,7 @@ func writeOnWriteAheadLog(msg Message) error {
 	}
 
 	// Assign the auto-generated ID to the message
-	msg.Id = nextID
+	msg.ID = nextID
 
 	// Open the file for appending, creating it if it doesn't exist.
 	file, err := os.OpenFile(walPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
@@ -222,8 +222,14 @@ func sendMessageFromWALAtOffset(conn net.Conn, topic string, offset int64) {
 				header := make([]byte, 5)
 				header[0] = MessageTypeMessage
 				binary.BigEndian.PutUint32(header[1:], uint32(len(body)))
-				conn.Write(header)
-				conn.Write(body)
+				if _, err := conn.Write(header); err != nil {
+					log.Printf("Error writing message header: %v\n", err)
+					return
+				}
+				if _, err := conn.Write(body); err != nil {
+					log.Printf("Error writing message body: %v\n", err)
+					return
+				}
 			}
 			break
 		}
@@ -256,11 +262,17 @@ func sendErrorToClient(conn net.Conn, errMsg string) {
 	header[0] = MessageTypeError
 	msg := []byte(errMsg)
 	binary.BigEndian.PutUint32(header[1:], uint32(len(msg)))
-	conn.Write(header)
-	conn.Write(msg)
+	if _, err := conn.Write(header); err != nil {
+		log.Printf("Error writing error header: %v\n", err)
+		return
+	}
+	if _, err := conn.Write(msg); err != nil {
+		log.Printf("Error writing error message: %v\n", err)
+	}
 }
 
 func main() {
+	//nolint:gosec // G102: Intentionally bind to all interfaces for message broker accessibility
 	listener, err := net.Listen("tcp", ":8080")
 	if err != nil {
 		log.Fatalf("Error starting server: %v\n", err)

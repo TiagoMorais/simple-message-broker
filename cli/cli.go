@@ -14,7 +14,7 @@ import (
 type Message struct {
 	Topic   string `json:"topic"`
 	Message string `json:"message,omitempty"`
-	Id      uint32 `json:"id,omitempty"`
+	ID      uint32 `json:"id,omitempty"`
 }
 
 type Ack struct {
@@ -72,8 +72,14 @@ func main() {
 			header[0] = 0x01 // PUBLISH
 			binary.BigEndian.PutUint32(header[1:], uint32(len(body)))
 
-			conn.Write(header)
-			conn.Write(body)
+			if _, err := conn.Write(header); err != nil {
+				fmt.Println("Erro ao enviar cabeçalho:", err)
+				continue
+			}
+			if _, err := conn.Write(body); err != nil {
+				fmt.Println("Erro ao enviar corpo:", err)
+				continue
+			}
 
 		case "subscribe":
 			if len(parts) < 2 {
@@ -93,8 +99,14 @@ func main() {
 			header[0] = 0x02 // SUBSCRIBE
 			binary.BigEndian.PutUint32(header[1:], uint32(len(body)))
 
-			conn.Write(header)
-			conn.Write(body)
+			if _, err := conn.Write(header); err != nil {
+				fmt.Println("Erro ao enviar cabeçalho:", err)
+				continue
+			}
+			if _, err := conn.Write(body); err != nil {
+				fmt.Println("Erro ao enviar corpo:", err)
+				continue
+			}
 
 		case "ack":
 			if len(parts) < 3 {
@@ -116,13 +128,19 @@ func main() {
 			header := make([]byte, 5)
 			header[0] = 0x03 // ACK
 			binary.BigEndian.PutUint32(header[1:], uint32(len(body)))
-			conn.Write(header)
-			conn.Write(body)
+			if _, err := conn.Write(header); err != nil {
+				fmt.Println("Erro ao enviar cabeçalho:", err)
+				continue
+			}
+			if _, err := conn.Write(body); err != nil {
+				fmt.Println("Erro ao enviar corpo:", err)
+				continue
+			}
 
 		case "exit":
 			return
 		default:
-			fmt.Println("Comando desconhecido:", command)
+			fmt.Println("Command desconhecido:", command)
 		}
 	}
 }
@@ -155,7 +173,7 @@ func readMessages(conn net.Conn) {
 				fmt.Println("Erro ao decodificar a mensagem:", err)
 				return
 			}
-			fmt.Printf("Mensagem recebida do tópico '%s' (id=%d): %s\n", msg.Topic, msg.Id, msg.Message)
+			fmt.Printf("Mensagem recebida do tópico '%s' (id=%d): %s\n", msg.Topic, msg.ID, msg.Message)
 		case 0xFF: // Error
 			fmt.Printf("Erro do servidor: %s\n", string(body))
 		default:
