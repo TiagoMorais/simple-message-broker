@@ -138,8 +138,12 @@ func BenchmarkPublishSubscribe(b *testing.B) {
 	subHeader := make([]byte, 5)
 	subHeader[0] = 0x02 // SUBSCRIBE
 	binary.BigEndian.PutUint32(subHeader[1:], uint32(len(subBody)))
-	subConn.Write(subHeader)
-	subConn.Write(subBody)
+	if _, err := subConn.Write(subHeader); err != nil {
+		b.Fatalf("Error writing subscribe header: %v", err)
+	}
+	if _, err := subConn.Write(subBody); err != nil {
+		b.Fatalf("Error writing subscribe body: %v", err)
+	}
 
 	// Reader for subscriber
 	subReader := bufio.NewReader(subConn)
@@ -153,8 +157,12 @@ func BenchmarkPublishSubscribe(b *testing.B) {
 		pubHeader := make([]byte, 5)
 		pubHeader[0] = 0x01 // PUBLISH
 		binary.BigEndian.PutUint32(pubHeader[1:], uint32(len(pubBody)))
-		pubConn.Write(pubHeader)
-		pubConn.Write(pubBody)
+		if _, err := pubConn.Write(pubHeader); err != nil {
+			b.Fatalf("Error writing publish header: %v", err)
+		}
+		if _, err := pubConn.Write(pubBody); err != nil {
+			b.Fatalf("Error writing publish body: %v", err)
+		}
 
 		// Read message from server
 		header := make([]byte, 5)
@@ -171,13 +179,19 @@ func BenchmarkPublishSubscribe(b *testing.B) {
 
 		// Send ACK
 		var receivedMsg Message
-		json.Unmarshal(body, &receivedMsg)
-		ack := Ack{Topic: topic, Offset: int64(receivedMsg.Id)}
+		if err := json.Unmarshal(body, &receivedMsg); err != nil {
+			b.Fatalf("Error unmarshalling message: %v", err)
+		}
+		ack := Ack{Topic: topic, Offset: int64(receivedMsg.ID)}
 		ackBody, _ := json.Marshal(ack)
 		ackHeader := make([]byte, 5)
 		ackHeader[0] = 0x03 // ACK
 		binary.BigEndian.PutUint32(ackHeader[1:], uint32(len(ackBody)))
-		subConn.Write(ackHeader)
-		subConn.Write(ackBody)
+		if _, err := subConn.Write(ackHeader); err != nil {
+			b.Fatalf("Error writing ACK header: %v", err)
+		}
+		if _, err := subConn.Write(ackBody); err != nil {
+			b.Fatalf("Error writing ACK body: %v", err)
+		}
 	}
 }
