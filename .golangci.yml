@@ -1,36 +1,26 @@
-version: 2
-
 linters:
   enable:
-    - errcheck      # Check for unchecked errors
-    - govet         # Go vet checks
-    - ineffassign   # Detect ineffectual assignments
-    - staticcheck   # Advanced static analysis
-    - unused        # Check for unused code
-    - misspell      # Find commonly misspelled words
-    - revive        # Fast, configurable, extensible linter
-    - gosec         # Security-focused linter
-    - bodyclose     # Check for unclosed HTTP response bodies
-    - errorlint     # Error wrapping checks
-    - noctx         # Detect missing context.Context usage
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - misspell
+    - revive
+    - gosec
+    - bodyclose
+    - errorlint
+    - noctx
 
 linters-settings:
   gosec:
     excludes:
       - G304  # Allow file path variables (needed for WAL)
-  
-  revive:
-    rules:
-      - name: exported
-        disabled: false
-        arguments:
-          - "disableStutteringCheck"
 
 issues:
-  exclude-use-default: false
   max-issues-per-linter: 0
   max-same-issues: 0
 
 run:
   timeout: 5m
-  tests: true
+
