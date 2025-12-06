@@ -11,6 +11,15 @@ import (
 	"sync"
 )
 
+// Message types
+const (
+	MessageTypePublish   = 0x01
+	MessageTypeSubscribe = 0x02
+	MessageTypeAck       = 0x03
+	MessageTypeMessage   = 0x03
+	MessageTypeError     = 0xFF
+)
+
 type Message struct {
 	Topic   string `json:"topic"`
 	Message string `json:"message"`
@@ -20,11 +29,6 @@ type Message struct {
 type Subscription struct {
 	Topic string
 	Conn  net.Conn
-}
-
-type Topic struct {
-	Name   string `json:"name"`
-	Offset int64  `json:"offset"`
 }
 
 type Ack struct {
@@ -90,33 +94,33 @@ func handleConnection(conn net.Conn) {
 
 		// Processar a mensagem
 		switch messageType {
-		case 0x01: // PUBLISH
+		case MessageTypePublish:
 			var msg Message
 			err = json.Unmarshal(body, &msg)
 			if err != nil {
-				log.Println("Error decoding PUBLISH message:", err)
+				log.Printf("Error decoding PUBLISH message: %v\n", err)
 				return
 			}
-			writeOnWriteAheadLog(msg)
+			if err := writeOnWriteAheadLog(msg); err != nil {
+				log.Printf("Error writing to WAL for topic %s: %v\n", msg.Topic, err)
+				return
+			}
 			// Do NOT send to consumers directly here
-		case 0x02: // SUBSCRIBE
+		case MessageTypeSubscribe:
 			var sub Subscription
 			err = json.Unmarshal(body, &sub)
 			if err != nil {
-				log.Println("Error decoding SUBSCRIBE message:", err)
+				log.Printf("Error decoding SUBSCRIBE message: %v\n", err)
 				return
 			}
 			sub.Conn = conn
 			if !subscribe(sub) {
 				// Send error to client: only one consumer allowed
-				header := make([]byte, 5)
-				header[0] = 0xFF // Custom error type
-				msg := []byte("Topic already has a consumer")
-				binary.BigEndian.PutUint32(header[1:], uint32(len(msg)))
-				conn.Write(header)
-				conn.Write(msg)
+				log.Printf("Subscription rejected for topic %s: already has a consumer\n", sub.Topic)
+				sendErrorToClient(conn, "Topic already has a consumer")
 				return
 			}
+			log.Printf("New subscription for topic: %s\n", sub.Topic)
 			// Start sending messages from WAL at current topic offset (default 0)
 			topicOffsets.Lock()
 			if _, exists := topicOffsets.offsets[sub.Topic]; !exists {
@@ -126,11 +130,11 @@ func handleConnection(conn net.Conn) {
 			topicOffsets.Unlock()
 			sendMessageFromWALAtOffset(conn, sub.Topic, offset)
 			saveTopicOffsets()
-		case 0x03: // ACK
+		case MessageTypeAck:
 			var ack Ack
 			err = json.Unmarshal(body, &ack)
 			if err != nil {
-				log.Println("Error decoding ACK message:", err)
+				log.Printf("Error decoding ACK message: %v\n", err)
 				return
 			}
 			log.Printf("ACK received for topic %s, offset %d\n", ack.Topic, ack.Offset)
@@ -143,30 +147,32 @@ func handleConnection(conn net.Conn) {
 	}
 }
 
-func writeOnWriteAheadLog(msg Message) {
-	wal_path := WriteAheadLogDirectory + msg.Topic + ".log"
+func writeOnWriteAheadLog(msg Message) error {
+	walPath := WriteAheadLogDirectory + msg.Topic + ".log"
 
 	// Ensure the directory exists.
 	if err := os.MkdirAll(WriteAheadLogDirectory, os.ModePerm); err != nil {
-		log.Println("Error creating WAL directory:", err)
-		return
+		return err
 	}
 
 	// Open the file for appending, creating it if it doesn't exist.
-	file, err := os.OpenFile(wal_path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	file, err := os.OpenFile(walPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
-		log.Println("Error opening WAL file:", err)
-		return
+		return err
 	}
 	defer file.Close()
 
 	line, err := json.Marshal(msg)
 	if err != nil {
-		log.Println("Error serializing message for WAL:", err)
-		return
+		return err
 	}
 	if _, err := file.Write(append(line, '\n')); err != nil {
-		log.Println("Error writing to WAL:", err)
+		return err
+	}
+
+	// Sync to ensure durability
+	if err := file.Sync(); err != nil {
+		return err
 	}
 
 	// Notify subscriber if one exists and is waiting
@@ -178,6 +184,8 @@ func writeOnWriteAheadLog(msg Message) {
 		topicOffsets.RUnlock()
 		sendMessageFromWALAtOffset(conns[0], msg.Topic, offset)
 	}
+
+	return nil
 }
 
 // Send the next message from WAL to the consumer based on topic offset
@@ -203,7 +211,7 @@ func sendMessageFromWALAtOffset(conn net.Conn, topic string, offset int64) {
 				}
 				body, _ := json.Marshal(msg)
 				header := make([]byte, 5)
-				header[0] = 0x03 // MESSAGE
+				header[0] = MessageTypeMessage
 				binary.BigEndian.PutUint32(header[1:], uint32(len(body)))
 				conn.Write(header)
 				conn.Write(body)
@@ -234,11 +242,19 @@ func subscribe(sub Subscription) bool {
 	return true
 }
 
+func sendErrorToClient(conn net.Conn, errMsg string) {
+	header := make([]byte, 5)
+	header[0] = MessageTypeError
+	msg := []byte(errMsg)
+	binary.BigEndian.PutUint32(header[1:], uint32(len(msg)))
+	conn.Write(header)
+	conn.Write(msg)
+}
+
 func main() {
 	listener, err := net.Listen("tcp", ":8080")
 	if err != nil {
-		log.Fatalln("Error starting server:", err)
-		return
+		log.Fatalf("Error starting server: %v\n", err)
 	}
 	defer listener.Close()
 
@@ -247,7 +263,7 @@ func main() {
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
-			log.Println("Error accepting connection:", err)
+			log.Printf("Error accepting connection: %v\n", err)
 			continue
 		}
 		go handleConnection(conn)
@@ -262,13 +278,18 @@ func saveTopicOffsets() {
 	defer topicOffsets.RUnlock()
 	file, err := os.Create(OffsetsFile)
 	if err != nil {
-		log.Println("Error creating offsets file:", err)
+		log.Printf("Error creating offsets file: %v\n", err)
 		return
 	}
 	defer file.Close()
 	enc := json.NewEncoder(file)
 	if err := enc.Encode(topicOffsets.offsets); err != nil {
-		log.Println("Error saving offsets:", err)
+		log.Printf("Error saving offsets: %v\n", err)
+		return
+	}
+	// Sync to ensure durability
+	if err := file.Sync(); err != nil {
+		log.Printf("Error syncing offsets file: %v\n", err)
 	}
 }
 
@@ -276,14 +297,18 @@ func saveTopicOffsets() {
 func loadTopicOffsets() {
 	file, err := os.Open(OffsetsFile)
 	if err != nil {
-		log.Println("Offsets file not found, starting with empty offsets.")
+		if os.IsNotExist(err) {
+			log.Println("Offsets file not found, starting with empty offsets.")
+		} else {
+			log.Printf("Error opening offsets file: %v\n", err)
+		}
 		return
 	}
 	defer file.Close()
 	var snapshot map[string]int64
 	dec := json.NewDecoder(file)
 	if err := dec.Decode(&snapshot); err != nil {
-		log.Println("Error loading offsets:", err)
+		log.Printf("Error loading offsets: %v\n", err)
 		return
 	}
 	topicOffsets.Lock()
@@ -291,5 +316,5 @@ func loadTopicOffsets() {
 		topicOffsets.offsets[topic] = offset
 	}
 	topicOffsets.Unlock()
-	log.Println("Topic offsets loaded from disk:", snapshot)
+	log.Printf("Topic offsets loaded from disk: %v\n", snapshot)
 }
