@@ -69,8 +69,6 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          # TODO: Update with your Docker Hub username and image name
-          # Example: username/simple-message-broker
           images: ${{ secrets.DOCKERHUB_USERNAME }}/simple-message-broker
           tags: |
             type=raw,value=latest
