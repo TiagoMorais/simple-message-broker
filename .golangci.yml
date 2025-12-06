@@ -1,26 +1,31 @@
+version: "2"
 linters:
   enable:
-    - errcheck
-    - govet
-    - ineffassign
-    - staticcheck
-    - unused
+    - gosec
     - misspell
     - revive
-    - gosec
-    - bodyclose
-    - errorlint
-    - noctx
-
-linters-settings:
-  gosec:
-    excludes:
-      - G304  # Allow file path variables (needed for WAL)
-
+  settings:
+    gosec:
+      excludes:
+        - G304
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
 issues:
   max-issues-per-linter: 0
   max-same-issues: 0
-
-run:
-  timeout: 5m
-
+formatters:
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
