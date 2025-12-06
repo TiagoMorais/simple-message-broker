@@ -1,0 +1,15 @@
+# Ignore development artifacts
+message-broker
+__debug_bin*
+
+# Ignore test data
+wal/
+*.log
+
+# Ignore config files (may contain sensitive data)
+config.json
+offsets.json
+
+# Ignore IDE files
+.vscode/
+.idea/
