@@ -155,6 +155,19 @@ func writeOnWriteAheadLog(msg Message) error {
 		return err
 	}
 
+	// Count existing messages to determine the next ID
+	var nextID uint32 = 0
+	if file, err := os.Open(walPath); err == nil {
+		scanner := bufio.NewScanner(file)
+		for scanner.Scan() {
+			nextID++
+		}
+		file.Close()
+	}
+
+	// Assign the auto-generated ID to the message
+	msg.Id = nextID
+
 	// Open the file for appending, creating it if it doesn't exist.
 	file, err := os.OpenFile(walPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
@@ -205,10 +218,6 @@ func sendMessageFromWALAtOffset(conn net.Conn, topic string, offset int64) {
 		if currentLine == offset {
 			var msg Message
 			if err := json.Unmarshal(scanner.Bytes(), &msg); err == nil {
-				// Ensure the message has a unique ID (use offset as ID if not set)
-				if msg.Id == 0 {
-					msg.Id = uint32(offset)
-				}
 				body, _ := json.Marshal(msg)
 				header := make([]byte, 5)
 				header[0] = MessageTypeMessage
