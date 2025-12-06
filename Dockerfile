@@ -26,9 +26,6 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
 # Runtime stage
 FROM alpine:latest
 
-# Install ca-certificates for HTTPS support
-RUN apk --no-cache add ca-certificates
-
 # Create non-root user
 RUN addgroup -g 1000 broker && \
     adduser -D -u 1000 -G broker broker
