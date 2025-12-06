@@ -1,0 +1,42 @@
+linters:
+  enable:
+    - errcheck      # Check for unchecked errors
+    - gosimple      # Simplify code suggestions
+    - govet         # Go vet checks
+    - ineffassign   # Detect ineffectual assignments
+    - staticcheck   # Advanced static analysis
+    - unused        # Check for unused code
+    - gofmt         # Check code formatting
+    - goimports     # Check import formatting
+    - misspell      # Find commonly misspelled words
+    - revive        # Fast, configurable, extensible linter
+    - gosec         # Security-focused linter
+    - bodyclose     # Check for unclosed HTTP response bodies
+    - noctx         # Find sending HTTP request without context.Context
+    - errorlint     # Find code that will cause problems with Go 1.13+ error wrapping
+
+linters-settings:
+  gosec:
+    excludes:
+      - G304  # Allow file path variables (needed for WAL)
+  
+  revive:
+    rules:
+      - name: exported
+        disabled: false
+        arguments:
+          - "disableStutteringCheck"
+
+issues:
+  exclude-use-default: false
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+run:
+  timeout: 5m
+  tests: true
+
+output:
+  format: colored-line-number
+  print-issued-lines: true
+  print-linter-name: true
