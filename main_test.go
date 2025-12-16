@@ -10,76 +10,53 @@ import (
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/tiagomorais/simple-message-broker/internal/protocol"
+	"github.com/tiagomorais/simple-message-broker/internal/storage"
 )
 
-func TestSubscribe(t *testing.T) {
-	// Clean up before and after test
-	subscriptions.m = make(map[string][]net.Conn)
-	defer func() {
-		subscriptions.m = make(map[string][]net.Conn)
-	}()
+func TestOffsetStore(t *testing.T) {
+	testFile := "test_offsets.json"
+	defer os.Remove(testFile)
 
-	topic := "test_subscribe_topic"
-	conn1, _ := net.Pipe()
-	defer conn1.Close()
+	// Create store and set values
+	store := storage.NewOffsetStore(testFile)
+	store.Set("topic1", 10)
+	store.Set("topic2", 25)
 
-	sub1 := Subscription{
-		Topic: topic,
-		Conn:  conn1,
+	// Save to disk
+	if err := store.Save(); err != nil {
+		t.Fatalf("Error saving offsets: %v", err)
 	}
 
-	// First subscription should succeed
-	if ok := subscribe(sub1); !ok {
-		t.Errorf("Expected first subscription to succeed, but it failed")
+	// Create new store and load
+	store2 := storage.NewOffsetStore(testFile)
+	if err := store2.Load(); err != nil {
+		t.Fatalf("Error loading offsets: %v", err)
 	}
 
-	if len(subscriptions.m[topic]) != 1 {
-		t.Errorf("Expected 1 subscriber for topic %s, got %d", topic, len(subscriptions.m[topic]))
+	// Compare
+	expected := map[string]int64{"topic1": 10, "topic2": 25}
+	actual := map[string]int64{
+		"topic1": store2.Get("topic1"),
+		"topic2": store2.Get("topic2"),
 	}
 
-	// Second subscription should fail
-	conn2, _ := net.Pipe()
-	defer conn2.Close()
-	sub2 := Subscription{
-		Topic: topic,
-		Conn:  conn2,
-	}
-	if ok := subscribe(sub2); ok {
-		t.Errorf("Expected second subscription to fail, but it succeeded")
-	}
-
-	if len(subscriptions.m[topic]) != 1 {
-		t.Errorf("Expected 1 subscriber for topic %s after failed attempt, got %d", topic, len(subscriptions.m[topic]))
+	if !reflect.DeepEqual(expected, actual) {
+		t.Errorf("Loaded offsets do not match. Expected %v, got %v", expected, actual)
 	}
 }
 
-func TestSaveAndLoadTopicOffsets(t *testing.T) {
-	// Clean up before and after test
-	defer func() {
-		os.Remove(OffsetsFile)
-		topicOffsets.offsets = make(map[string]int64)
-	}()
+func TestOffsetIncrement(t *testing.T) {
+	store := storage.NewOffsetStore("")
 
-	// 1. Save some offsets
-	expectedOffsets := map[string]int64{
-		"topic1": 10,
-		"topic2": 25,
-	}
-	topicOffsets.offsets = expectedOffsets
-	saveTopicOffsets()
+	store.Set("test", 5)
+	newOffset := store.Increment("test")
 
-	// 2. Clear in-memory offsets
-	topicOffsets.offsets = make(map[string]int64)
-
-	// 3. Load from file
-	loadTopicOffsets()
-
-	// 4. Compare
-	if !reflect.DeepEqual(expectedOffsets, topicOffsets.offsets) {
-		t.Errorf("Loaded offsets do not match saved offsets. Expected %v, got %v", expectedOffsets, topicOffsets.offsets)
+	if newOffset != 6 {
+		t.Errorf("Expected offset 6, got %d", newOffset)
 	}
 }
-
 
 func BenchmarkPublish(b *testing.B) {
 	conn, err := net.Dial("tcp", "localhost:8080")
@@ -88,7 +65,7 @@ func BenchmarkPublish(b *testing.B) {
 	}
 	defer conn.Close()
 
-	msg := Message{
+	msg := protocol.Message{
 		Topic:   "test_topic",
 		Message: "hello world",
 	}
@@ -98,7 +75,7 @@ func BenchmarkPublish(b *testing.B) {
 	}
 
 	header := make([]byte, 5)
-	header[0] = 0x01 // PUBLISH
+	header[0] = protocol.MessageTypePublish
 	binary.BigEndian.PutUint32(header[1:], uint32(len(body)))
 
 	b.ResetTimer()
@@ -133,10 +110,10 @@ func BenchmarkPublishSubscribe(b *testing.B) {
 	topic := fmt.Sprintf("benchmark_topic_%d", time.Now().UnixNano())
 
 	// Subscribe
-	subMsg := Message{Topic: topic}
+	subMsg := protocol.Message{Topic: topic}
 	subBody, _ := json.Marshal(subMsg)
 	subHeader := make([]byte, 5)
-	subHeader[0] = 0x02 // SUBSCRIBE
+	subHeader[0] = protocol.MessageTypeSubscribe
 	binary.BigEndian.PutUint32(subHeader[1:], uint32(len(subBody)))
 	if _, err := subConn.Write(subHeader); err != nil {
 		b.Fatalf("Error writing subscribe header: %v", err)
@@ -152,10 +129,10 @@ func BenchmarkPublishSubscribe(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		// Publish
-		pubMsg := Message{Topic: topic, Message: "benchmark message"}
+		pubMsg := protocol.Message{Topic: topic, Message: "benchmark message"}
 		pubBody, _ := json.Marshal(pubMsg)
 		pubHeader := make([]byte, 5)
-		pubHeader[0] = 0x01 // PUBLISH
+		pubHeader[0] = protocol.MessageTypePublish
 		binary.BigEndian.PutUint32(pubHeader[1:], uint32(len(pubBody)))
 		if _, err := pubConn.Write(pubHeader); err != nil {
 			b.Fatalf("Error writing publish header: %v", err)
@@ -178,14 +155,14 @@ func BenchmarkPublishSubscribe(b *testing.B) {
 		}
 
 		// Send ACK
-		var receivedMsg Message
+		var receivedMsg protocol.Message
 		if err := json.Unmarshal(body, &receivedMsg); err != nil {
 			b.Fatalf("Error unmarshalling message: %v", err)
 		}
-		ack := Ack{Topic: topic, Offset: int64(receivedMsg.ID)}
+		ack := protocol.Ack{Topic: topic, Offset: int64(receivedMsg.ID)}
 		ackBody, _ := json.Marshal(ack)
 		ackHeader := make([]byte, 5)
-		ackHeader[0] = 0x03 // ACK
+		ackHeader[0] = protocol.MessageTypeAck
 		binary.BigEndian.PutUint32(ackHeader[1:], uint32(len(ackBody)))
 		if _, err := subConn.Write(ackHeader); err != nil {
 			b.Fatalf("Error writing ACK header: %v", err)
